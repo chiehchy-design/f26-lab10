@@ -44,6 +44,31 @@ class RaceTest {
                 "a room may hold at most one CONFIRMED booking for any minute");
     }
 
+    /**
+     * Milestone 2: the teammate's patch checks twice. Park A after its SECOND
+     * hasOverlap (the re-check right before insert) and let B book in that gap.
+     */
+    @Test
+    void doubleCheckStillLetsTwoBookingsConfirm() throws InterruptedException {
+        InMemoryBookingStore real = new InMemoryBookingStore();
+        PausingStore gated = new PausingStore(real, "hasOverlap", 2);
+        BookingService service = new BookingService(gated, ROOMS);
+
+        Thread a = new Thread(() -> service.book(WEAN, 540, 600), "customer-A");
+        a.start();
+        gated.awaitPaused(); // A passed both checks and is parked before insert
+
+        Thread b = new Thread(() -> service.book(WEAN, 540, 600), "customer-B");
+        b.start();
+        b.join(PausingStore.TIMEOUT_MILLIS);
+
+        gated.release();
+        a.join(PausingStore.TIMEOUT_MILLIS);
+
+        assertEquals(1, confirmedCount(real, 540, 600),
+                "a room may hold at most one CONFIRMED booking for any minute");
+    }
+
     private static int confirmedCount(InMemoryBookingStore store, int start, int end) {
         int count = 0;
         for (Booking booking : store.bookingsForRoom(WEAN)) {

@@ -94,11 +94,38 @@ ms apart, with nothing logged in between.
 
 **Your milestone-1 test on the patched code.** Green or red. Paste the result.
 
+**Green**, but only because the gap moved somewhere the test does not look:
+```
+2026-11-06T16:40:24.420Z INFO booking.confirmed booking=bk-1 room=WEH-5409 start=540 end=600
+2026-11-06T16:40:24.424Z INFO booking.rejected room=WEH-5409 start=540 end=600 reason=slot already held
+[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0
+```
+A parks after its *first* check. While it is parked, B books. Then A's new re-check sees B's
+booking and rejects.
+
 **The re-aimed run.** Method name, call index, the pasted result, and one line
 on why that aim tests the patch rather than sidestepping it.
 
+Test: `RaceTest.doubleCheckStillLetsTwoBookingsConfirm`. **Aim: `hasOverlap`, call 2**, which
+is A's re-check, the one the patch added.
+```
+2026-11-06T16:40:33.651Z INFO booking.confirmed booking=bk-2 room=WEH-5409 start=540 end=600
+2026-11-06T16:40:33.653Z INFO booking.confirmed booking=bk-1 room=WEH-5409 start=540 end=600
+[ERROR] RaceTest.doubleCheckStillLetsTwoBookingsConfirm:68 a room may hold at most one CONFIRMED booking for any minute ==> expected: <1> but was: <2>
+[ERROR] Tests run: 1, Failures: 1, Errors: 0, Skipped: 0
+```
+Why this aim tests the patch: the patch's claim is "nothing can sneak in after the re-check".
+Parking right after the re-check targets exactly that claim. There is still a gap between the
+last `hasOverlap` and `insert`, and B gets through it.
+
 **Your verdict.** Accept or reject, and what your milestone-1 result does and
 does not show about the patch.
+
+**Reject.** The re-check is still a separate locked call from the insert, so it is the same
+check-then-act bug with the gap moved a few lines down. All it does is make the gap smaller,
+which is why the suite and the stress runner looked clean. The green milestone-1 run only
+proves the patch closes *that one* schedule. It says nothing about the other schedules. A green
+race test means "this interleaving is handled", not "the race is gone".
 
 ---
 
