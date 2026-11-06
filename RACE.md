@@ -18,13 +18,21 @@ verdict for each. Add or remove rows as needed.
 
 | # | What you found (method, field, or class) | Verdict, in one line |
 |---|---|---|
-| 1 | | |
-| 2 | | |
-| 3 | | |
-| 4 | | |
+| 1 | `BookingService.book()`: `store.hasOverlap(...)` then `store.insert(...)` | **The bug.** Each call is synchronized on its own, but nothing holds the lock between the check and the insert (check-then-act). |
+| 2 | `InMemoryBookingStore`: every method `synchronized` on the store | Fine on its own. Each single call is atomic, but that does not make two calls in a row atomic. |
+| 3 | `cancelAndPromote()`: cancel + promote in one store call | Fine. Both changes happen under one lock, and promotion re-checks for confirmed overlaps. (A `book()` sitting in the gap from #1 can still race it, but that is the same bug as #1.) |
+| 4 | `BookingStats`: plain `long` counters, `count++` with no lock | Real race (lost updates), but documented as approximate and nothing reads it. Not the ticket. |
+| 5 | `BookingService.sequence` (`AtomicLong`) for booking ids | Fine. Atomic, so ids are unique. That matches the ticket (different ids). |
+| 6 | `BookingService.catalog` (`HashMap`) | Fine. Built in the constructor, stored in a `final` field, and only read after that. |
+| 7 | `joinWaitlist()`: `insert` with no check | Fine. A WAITLISTED entry blocks nothing, so it cannot break the invariant. |
 
-**Which one explains the ticket, and how you know.** Tie it to the invariant
-the ticket names.
+**Which one explains the ticket, and how you know.** #1. The invariant is "a room has at most
+one CONFIRMED booking covering any minute". Only `book()` creates CONFIRMED bookings from
+scratch, and it decides "the slot is free" in one locked call and acts on it in another. Two
+requests that both finish `hasOverlap` before either one calls `insert` both see "free" and
+both insert as CONFIRMED. That matches the ticket: two confirmations 1 ms apart, different ids,
+no errors, and only when a slot has just opened and people rush for it. Clicking on a count of
+three is far too slow to land inside a gap that small, which is why ops could not reproduce it.
 
 ### Predicted interleaving (write this before you run your race test)
 
@@ -34,10 +42,12 @@ as your prediction needs.
 
 | Step | Thread A | Thread B |
 |---|---|---|
-| t1 | | |
-| t2 | | |
-| t3 | | |
-| | **End state:** | |
+| t1 | `book(WEH-5409, 540, 600)` calls `hasOverlap` and gets **false** (room empty) | |
+| t2 | *(paused right after the check, before `insert`)* | |
+| t3 | | `book(WEH-5409, 540, 600)` calls `hasOverlap` and gets **false** (A has not inserted yet) |
+| t4 | | `insert(bk-2, CONFIRMED)`, logs `booking.confirmed` |
+| t5 | `insert(bk-1, CONFIRMED)`, logs `booking.confirmed` | |
+| | **End state:** two CONFIRMED bookings for WEH-5409 540..600. The invariant is broken. | |
 
 If the run turned out different from your prediction, add one line on what
 you missed. Leave the table as you first wrote it.
