@@ -1,6 +1,7 @@
 package edu.cmu.cs214.lab10.harness;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import edu.cmu.cs214.lab10.domain.Booking;
 import edu.cmu.cs214.lab10.domain.BookingStatus;
@@ -22,22 +23,27 @@ class RaceTest {
      * Milestone 1: two customers book the same free slot. Thread A is parked
      * right after its overlap check says "free", and thread B books the same
      * slot in that gap. At most one booking may end up CONFIRMED.
+     *
+     * <p>Milestone 3: book() no longer calls hasOverlap, so the aim moved to
+     * insertIfFree call 1 (the new check-and-insert). A is parked right after
+     * it, and B books in that gap. The test also asserts that the gate fired,
+     * so a green run cannot come from a pause that never happened.
      */
     @Test
     void twoBookingsForTheSameSlotConfirmAtMostOnce() throws InterruptedException {
         InMemoryBookingStore real = new InMemoryBookingStore();
-        PausingStore gated = new PausingStore(real, "hasOverlap", 1);
+        PausingStore gated = new PausingStore(real, "insertIfFree", 1);
         BookingService service = new BookingService(gated, ROOMS);
 
         Thread a = new Thread(() -> service.book(WEAN, 540, 600), "customer-A");
         a.start();
-        gated.awaitPaused(); // A has checked "free" and is parked before insert
+        assertTrue(gated.awaitPaused(), "A must be parked inside the store call");
 
         Thread b = new Thread(() -> service.book(WEAN, 540, 600), "customer-B");
         b.start();
         b.join(PausingStore.TIMEOUT_MILLIS);
 
-        gated.release(); // A goes on to insert
+        gated.release(); // A finishes its booking
         a.join(PausingStore.TIMEOUT_MILLIS);
 
         assertEquals(1, confirmedCount(real, 540, 600),

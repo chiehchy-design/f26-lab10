@@ -74,3 +74,7 @@ depends on them. Count the bookings in the store when you need an exact number.
 
 See the Lab 10 handout on the course page for the three milestones you show a
 TA.
+
+## Tools used
+
+Claude Code (VS Code extension) with Claude Opus 5.5 (`claude-opus-5-5`).

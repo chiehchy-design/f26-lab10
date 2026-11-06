@@ -135,13 +135,130 @@ race test means "this interleaving is handled", not "the race is gone".
 and the two operations it now covers. Paste the diff of your change and the
 passing run of your milestone-1 test and the full suite.
 
+**Option 2: an atomic check-and-insert in the store.** I added `BookingStore.insertIfFree(booking)`.
+In `InMemoryBookingStore` it is `synchronized` on the store, so **`hasOverlap` and the insert
+now run under one lock, in one call**. `book()` calls it instead of `hasOverlap` + `insert`.
+`PausingStore` passes it through (as the handout says, the build broke until I added it).
+
+Why option 2 and not `synchronized` on the service: the constructor says the store can be
+*shared by several service instances*. A lock on the service only stops callers of that one
+instance. The store's lock covers everyone, and it is the same lock `cancelAndPromote` already
+uses, so book and cancel/promote can't interleave either.
+
+```diff
+diff --git a/src/main/java/edu/cmu/cs214/lab10/harness/PausingStore.java b/src/main/java/edu/cmu/cs214/lab10/harness/PausingStore.java
+index 5e6b639..1118dd1 100644
+--- a/src/main/java/edu/cmu/cs214/lab10/harness/PausingStore.java
++++ b/src/main/java/edu/cmu/cs214/lab10/harness/PausingStore.java
+@@ -111,2 +111,7 @@ public final class PausingStore implements BookingStore {
+ 
++    @Override
++    public boolean insertIfFree(Booking booking) {
++        return gate("insertIfFree", () -> delegate.insertIfFree(booking));
++    }
++
+     @Override
+diff --git a/src/main/java/edu/cmu/cs214/lab10/service/BookingService.java b/src/main/java/edu/cmu/cs214/lab10/service/BookingService.java
+index 514c3e1..70028f7 100644
+--- a/src/main/java/edu/cmu/cs214/lab10/service/BookingService.java
++++ b/src/main/java/edu/cmu/cs214/lab10/service/BookingService.java
+@@ -69,7 +69,7 @@ public final class BookingService {
+         }
+-        if (store.hasOverlap(roomId, startMinute, endMinute)) {
++        Booking booking = new Booking(nextId(), roomId, startMinute, endMinute, BookingStatus.CONFIRMED);
++        // One store call: the check and the insert happen under the store's lock.
++        if (!store.insertIfFree(booking)) {
+             return reject(roomId, startMinute, endMinute, "slot already held");
+         }
+-        Booking booking = new Booking(nextId(), roomId, startMinute, endMinute, BookingStatus.CONFIRMED);
+-        store.insert(booking);
+         stats.recordConfirmed();
+diff --git a/src/main/java/edu/cmu/cs214/lab10/store/BookingStore.java b/src/main/java/edu/cmu/cs214/lab10/store/BookingStore.java
+index 3ae3544..6d81401 100644
+--- a/src/main/java/edu/cmu/cs214/lab10/store/BookingStore.java
++++ b/src/main/java/edu/cmu/cs214/lab10/store/BookingStore.java
+@@ -27,2 +27,11 @@ public interface BookingStore {
+ 
++    /**
++     * Stores a CONFIRMED booking only if no CONFIRMED booking for the same room
++     * overlaps its range, as one indivisible step. No other thread can change
++     * the room between the check and the insert.
++     *
++     * @return true when the booking was stored, false when the slot was held
++     */
++    boolean insertIfFree(Booking booking);
++
+     /** Stores the booking. Ids are assumed unique; the store does not check. */
+diff --git a/src/main/java/edu/cmu/cs214/lab10/store/InMemoryBookingStore.java b/src/main/java/edu/cmu/cs214/lab10/store/InMemoryBookingStore.java
+index f7fd85f..6762c31 100644
+--- a/src/main/java/edu/cmu/cs214/lab10/store/InMemoryBookingStore.java
++++ b/src/main/java/edu/cmu/cs214/lab10/store/InMemoryBookingStore.java
+@@ -33,2 +33,12 @@ public final class InMemoryBookingStore implements BookingStore {
+ 
++    @Override
++    public synchronized boolean insertIfFree(Booking booking) {
++        // Check and insert under the same lock, so nobody can book in between.
++        if (hasOverlap(booking.roomId(), booking.startMinute(), booking.endMinute())) {
++            return false;
++        }
++        bookings.add(booking);
++        return true;
++    }
++
+     @Override
+```
+
+Milestone-1 test (re-aimed, see below):
+```
+2026-11-06T16:41:22.841Z INFO booking.rejected room=WEH-5409 start=540 end=600 reason=slot already held
+2026-11-06T16:41:22.844Z INFO booking.confirmed booking=bk-1 room=WEH-5409 start=540 end=600
+[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0
+[INFO] BUILD SUCCESS
+```
+Full suite:
+```
+[INFO] Tests run: 2, Failures: 0, Errors: 0, Skipped: 0 -- in edu.cmu.cs214.lab10.harness.RaceTest
+[INFO] Tests run: 7, Failures: 0, Errors: 0, Skipped: 0 -- in edu.cmu.cs214.lab10.service.BookingServiceTest
+[INFO] Tests run: 4, Failures: 0, Errors: 0, Skipped: 0 -- in edu.cmu.cs214.lab10.domain.BookingTest
+[INFO] Tests run: 13, Failures: 0, Errors: 0, Skipped: 0
+[INFO] BUILD SUCCESS
+```
+
 **Is your milestone-1 test still testing anything?** After your fix, describe
 what that test now exercises. Did `PausingStore` pause a call during the green run? How do
 you know?
+
+**I adjusted it.** After the fix, `book()` never calls `hasOverlap`, so the old aim
+(`hasOverlap`, 1) would never fire. The test would go green for the wrong reason: nothing was
+paused, so it would be testing nothing. I re-aimed it at **`insertIfFree`, call 1** and added
+`assertTrue(gated.awaitPaused())`, so the test fails if the pause doesn't happen. Now A
+check-and-inserts, parks, and B books in that gap. The log shows B **rejected** while A is
+parked, then A's confirm. So yes, it paused, and the invariant held anyway.
+
+(The milestone-2 test, aimed at `hasOverlap` 2, no longer fires on the fixed code either. It
+stays as the evidence against the patch, and it is green here after its ~2 s timeout.)
 
 **What runs one at a time now that ran in parallel before.** Name concretely which callers
 queue behind which. "Nothing, it is just correct now" does not count as an
 answer.
 
+Every `book()` call on the store, for **any room**, now waits for the store's single lock while
+it scans the list and inserts. Before, a booker only held the lock for the scan, let go, and
+held it again for the insert, so other callers could slip in between. Now the whole
+check-and-insert is one turn, so these all queue behind it: other `book()` calls (even for a
+different room), `cancelBooking` (`cancelAndPromote`), `joinWaitlist` (`insert`), and
+`listBookings` (`bookingsForRoom`). **Cost:** one lock for the whole store, held a bit longer per
+booking. That's fine for an in-memory list. A busy system would want a lock per room.
+
 **What you left unfixed.** For anything your review flagged that you chose not
 to fix, one line each on why.
+
+- **`BookingStats` lost updates** (suspect #4): documented as approximate, nothing reads it, and
+  locking every counter adds contention for a dashboard tile.
+- **`hasOverlap` / `insert` are still public on the store:** some future caller could rebuild
+  the check-then-act. I left them because `joinWaitlist`, the tests, and `PausingStore` use
+  them. The javadoc on `insertIfFree` says to use it for confirmed bookings.
+- **One store-wide lock, not one per room:** simpler and obviously correct. I'd only split it if
+  contention showed up.
+- **Ids can now skip a number:** `nextId()` runs before the atomic check, so a rejected booking
+  uses up an id. Ids only need to be unique, so this is harmless.
