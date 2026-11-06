@@ -52,11 +52,41 @@ as your prediction needs.
 If the run turned out different from your prediction, add one line on what
 you missed. Leave the table as you first wrote it.
 
+> **What I missed:** the end state matched. Only the ids were swapped: `book()` calls `nextId()`
+> *after* `hasOverlap`, so B (which got past the check first) got `bk-1` and A got `bk-2`.
+
 ### Your race test
 
 **How you aimed `PausingStore`, and the result.** Method name and call index, why
 that pair pins the schedule you predicted, and the output of two separate
 runs (assertion failure and log lines).
+
+Test: `RaceTest.twoBookingsForTheSameSlotConfirmAtMostOnce`.
+
+**Aim: `hasOverlap`, call 1.** Thread A makes the first `hasOverlap` call. It gets back "free"
+and then parks *before* it can `insert`. That is exactly the gap in suspect #1. Only once A is
+parked (`awaitPaused()`) does the test start B. B's `hasOverlap` is call 2, so it passes
+straight through. It also sees "free", inserts, and confirms. Then `release()` lets A insert
+too. No sleeps and no luck involved: the latches force this order on every run.
+
+Run 1:
+```
+2026-11-06T16:40:06.188Z INFO booking.confirmed booking=bk-1 room=WEH-5409 start=540 end=600
+2026-11-06T16:40:06.191Z INFO booking.confirmed booking=bk-2 room=WEH-5409 start=540 end=600
+[ERROR] RaceTest.twoBookingsForTheSameSlotConfirmAtMostOnce:43 a room may hold at most one CONFIRMED booking for any minute ==> expected: <1> but was: <2>
+[ERROR] Tests run: 1, Failures: 1, Errors: 0, Skipped: 0
+```
+
+Run 2:
+```
+2026-11-06T16:40:07.222Z INFO booking.confirmed booking=bk-1 room=WEH-5409 start=540 end=600
+2026-11-06T16:40:07.224Z INFO booking.confirmed booking=bk-2 room=WEH-5409 start=540 end=600
+[ERROR] RaceTest.twoBookingsForTheSameSlotConfirmAtMostOnce:43 a room may hold at most one CONFIRMED booking for any minute ==> expected: <1> but was: <2>
+[ERROR] Tests run: 1, Failures: 1, Errors: 0, Skipped: 0
+```
+
+This matches the ticket's log: two `booking.confirmed` lines for the same room and range, a few
+ms apart, with nothing logged in between.
 
 ---
 
